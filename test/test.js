@@ -60,6 +60,10 @@ describe('#set()', function () {
   before(function () {
     return store.sync()
   })
+  it('should use a default serializer', function (done) {
+    assert.strictEqual(store.serializer.constructor.name, 'SerializerDefault')
+    done()
+  })
   it('should save the session', function (done) {
     store.set(sessionId, sessionData, function (err, session) {
       assert.ok(!err, '#set() got an error')
@@ -295,5 +299,106 @@ describe('#stopExpiringSessions()', function () {
     assert.ok(store._expirationInterval, 'missing timeout object')
     store.stopExpiringSessions()
     assert.strictEqual(store._expirationInterval, null, 'expiration interval not nullified')
+  })
+})
+
+describe('#set() (with encryption)', function () {
+  var encdb = new Sequelize('session_test_encryption', 'test', '12345', {
+    operatorsAliases: false,
+    dialect: 'sqlite',
+    logging: false
+  })
+
+  var encstore = new SequelizeStore({
+    db: encdb,
+    // the expiration check interval is removed below in an `after` block
+    checkExpirationInterval: 100,
+    secret: 'Hello, world!'
+  })
+
+  after('clean up resources, allowing tests to terminate', function () {
+    encstore.stopExpiringSessions()
+  })
+
+  before(function () {
+    return encstore.sync()
+  })
+  it('should use an encrypting serializer', function (done) {
+    assert.strictEqual(encstore.serializer.constructor.name, 'SerializerEncrypting')
+    done()
+  })
+  it('should save the session', function (done) {
+    encstore.set(sessionId, sessionData, function (err, session) {
+      assert.ok(!err, '#set() got an error')
+      assert.ok(session, '#set() is not ok')
+
+      encstore.length(function (err, c) {
+        assert.ok(!err, '#length() got an error')
+        assert.strictEqual(1, c, '#length() is not 1')
+
+        encdb.models.Session
+          .findOne({
+            where: { sid: sessionId }
+          })
+          .then(function (tmpSession) {
+            var parsed
+
+            assert.ok(tmpSession, 'could not find session')
+            assert.ok(tmpSession.data, 'session is missing data field')
+
+            try {
+              parsed = JSON.parse(tmpSession.data)
+            } catch (err) {
+              assert.ok(!err, 'could not parse session.data')
+            }
+
+            assert.ok(parsed.ct, 'parsed session.data missing ct field')
+            assert.notDeepStrictEqual(sessionData, parsed)
+
+            encstore.get(sessionId, function (err, data) {
+              assert.ok(!err, '#get() got an error')
+              assert.deepStrictEqual(sessionData, data)
+
+              encstore.destroy(sessionId, function (err) {
+                assert.ok(!err, '#destroy() got an error')
+                done()
+              })
+            })
+          })
+          .catch(function (err) {
+            assert.ifError(err)
+          })
+      })
+    })
+  })
+  it('should have a future expires', function (done) {
+    encstore.set(sessionId, sessionData, function (err, session) {
+      assert.ok(!err, '#set() got an error')
+      assert.ok(session, '#set() is not ok')
+
+      assert.ok(session.expires, '.expires does not exist')
+      assert.ok(session.expires instanceof Date, '.expires is not a date')
+      assert.ok(session.expires > new Date(), '.expires is not in the future')
+
+      encstore.destroy(sessionId, function (err) {
+        assert.ok(!err, '#destroy() got an error')
+        done()
+      })
+    })
+  })
+  it('should have model instance methods', function (done) {
+    encstore.set(sessionId, sessionData, function (err, session) {
+      assert.ok(!err, '#set() got an error')
+      assert.ok(session, '#set() is not ok')
+
+      assert.ok(session.dataValues)
+      assert.ok(session.update)
+      assert.ok(session.save)
+
+      encstore.destroy(sessionId, function (err) {
+        assert.ok(!err, '#destroy() got an error')
+        done()
+      })
+    })
   })
 })
